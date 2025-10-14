@@ -23,9 +23,6 @@ import logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ],
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger(__name__)
@@ -70,8 +67,7 @@ class legion_cls_dataset(Dataset):
             img_path = os.path.join(self.args.data_base_test, self.data[idx]['image'])
         label = self.data[idx]['label']
 
-        # image = Image.open(img_path)
-        image = Image.open(img_path).convert("RGB")
+        image = Image.open(img_path)
 
         chat = [
             {
@@ -107,9 +103,10 @@ def load_model(args):
         args.model_path,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
-        use_flash_attention_2=True,
-        revision='a272c74',
-    ).eval().cuda()
+        attn_implementation="flash_attention_2",
+        device_map="auto",
+        revision='a272c74' if 'llava-hf/llava-1.5-7b-hf' in args.model_path else None,
+    ).eval()
     log.info(f"Successfully loaded model from: {args.model_path}")
     return model
 
@@ -160,7 +157,6 @@ def calculate_results_acc(results):
 
 
 def validate(args, model, cls_test_dataloader):
-    processor = AutoProcessor.from_pretrained("llava-hf/llava-1.5-7b-hf", revision='a272c74')
     processor = AutoProcessor.from_pretrained("llava-hf/llava-1.5-7b-hf", revision='a272c74')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     results = {}
