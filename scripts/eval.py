@@ -1,3 +1,4 @@
+import sys
 import torch
 import os
 import argparse
@@ -16,10 +17,22 @@ import torchvision.transforms as T
 from PIL import Image
 from torchvision.transforms.functional import InterpolationMode
 import torch.nn as nn
+import logging
 
+# Log config for streaming outputs to console
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ],
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger(__name__)
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Legion Model Training")
@@ -32,6 +45,7 @@ def parse_args():
     parser.add_argument("--test_json_file", default="", type=str)
     parser.add_argument("--output_path", default="", type=str)
     return parser.parse_args()
+
 
 class legion_cls_dataset(Dataset):
     def __init__(self, args, train=True):
@@ -55,16 +69,31 @@ class legion_cls_dataset(Dataset):
         else:
             img_path = os.path.join(self.args.data_base_test, self.data[idx]['image'])
         label = self.data[idx]['label']
-      
-        image = Image.open(img_path)
+
+        # image = Image.open(img_path)
+        image = Image.open(img_path).convert("RGB")
+
+        chat = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": self.data[idx]['conversations'][0]['value']}
+                ]
+            }
+        ]
+        prompt = self.processor.apply_chat_template(
+            chat, add_generation_prompt=True, tokenize=False
+        )
 
         inputs = self.processor(
-            text=self.data[idx]['conversations'][0]['value'],
+            text=prompt,
+            # text=self.data[idx]['conversations'][0]['value'],
             images=image,
             return_tensors="pt",
             padding="max_length",
-            max_length=1024,       
-            truncation=True       
+            max_length=1024,
+            truncation=True
         )
 
         cate = 'deepfake'
@@ -72,39 +101,38 @@ class legion_cls_dataset(Dataset):
         return inputs, [label], [img_path], [cate]
 
 
-
- 
 def load_model(args):
-    print("Loading model...")
+    log.info("Loading model...")
     model = LlavaForConditionalGeneration.from_pretrained(
-        args.model_path, 
-        torch_dtype=torch.bfloat16, 
-        low_cpu_mem_usage=True, 
+        args.model_path,
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True,
         use_flash_attention_2=True,
         revision='a272c74',
     ).eval().cuda()
-    print("Successfully loaded model from:", args.model_path)
+    log.info(f"Successfully loaded model from: {args.model_path}")
     return model
+
 
 def calculate_results_acc(results):
     acc_results = {}
-    
+
     for cate in results:
         data = results[cate]
-        
+
         right_real = data['right']['right_real']
         right_fake = data['right']['right_fake']
         wrong_real = data['wrong']['wrong_real']
         wrong_fake = data['wrong']['wrong_fake']
-        
-        total_real = right_real + wrong_real  
-        total_fake = right_fake + wrong_fake  
-        total = total_real + total_fake  
-        
+
+        total_real = right_real + wrong_real
+        total_fake = right_fake + wrong_fake
+        total = total_real + total_fake
+
         acc_total = (right_real + right_fake) / total if total != 0 else 0
         acc_real = right_real / total_real if total_real != 0 else 0
         acc_fake = right_fake / total_fake if total_fake != 0 else 0
-        
+
         acc_results[cate] = {
             'total_samples': total,
             'total_accuracy': round(acc_total, 4),
@@ -114,16 +142,17 @@ def calculate_results_acc(results):
                 'right_real': right_real,
                 'wrong_real': wrong_real,
                 'right_fake': right_fake,
-                'wrong_fake': wrong_fake,  
+                'wrong_fake': wrong_fake,
             }
         }
-    
+
     global_stats = {
         'total_right': sum(r['right']['right_real'] + r['right']['right_fake'] for r in results.values()),
         'total_wrong': sum(r['wrong']['wrong_real'] + r['wrong']['wrong_fake'] for r in results.values())
     }
-    global_stats['global_accuracy'] = global_stats['total_right'] / (global_stats['total_right'] + global_stats['total_wrong'])
-    
+    global_stats['global_accuracy'] = global_stats['total_right'] / (
+                global_stats['total_right'] + global_stats['total_wrong'])
+
     return {
         'category_acc': acc_results,
         'global_stats': global_stats
@@ -132,21 +161,22 @@ def calculate_results_acc(results):
 
 def validate(args, model, cls_test_dataloader):
     processor = AutoProcessor.from_pretrained("llava-hf/llava-1.5-7b-hf", revision='a272c74')
+    processor = AutoProcessor.from_pretrained("llava-hf/llava-1.5-7b-hf", revision='a272c74')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     results = {}
     outputs = []
     with torch.no_grad():
         for inputs, labels, paths, cates in tqdm(cls_test_dataloader):
 
-            inputs["input_ids"] = inputs["input_ids"].squeeze().to(device) 
+            inputs["input_ids"] = inputs["input_ids"].squeeze().to(device)
             inputs["attention_mask"] = inputs["attention_mask"].squeeze().to(device)
-            inputs["pixel_values"] = inputs["pixel_values"].squeeze().to(device)    
+            inputs["pixel_values"] = inputs["pixel_values"].squeeze().to(device)
             output = model.generate(**inputs, max_new_tokens=256)
             pred_cls = []
 
             for i in range(output.shape[0]):
                 response = processor.decode(output[i], skip_special_tokens=True).split('?')[-1]
-                print(response)
+                log.info(response)
                 outputs.append({"image_path": paths[0][i], "output": response})
                 # pdb.set_trace()
                 if 'real' in response.split('.')[0].lower():
@@ -160,33 +190,33 @@ def validate(args, model, cls_test_dataloader):
                         elif 'fake' in response.split('.')[1].lower():
                             pred_cls.append(0)
                         else:
-                            print(f"no fake or real in reponse:{response}")
+                            log.info(f"no fake or real in reponse:{response}")
                             pred_cls.append(random.choice([0, 1]))
                     except:
-                        print(f"no fake or real in reponse:{response}")
-                        pred_cls.append(random.choice([0, 1]))                          
+                        log.info(f"no fake or real in reponse:{response}")
+                        pred_cls.append(random.choice([0, 1]))
             for label, pred, cate in zip(labels[0].tolist(), pred_cls, cates[0]):
                 if cate not in results:
-                    results[cate] = {'right':{'right_fake':0, 'right_real':0}, 'wrong':{'wrong_fake':0, 'wrong_real':0}}
+                    results[cate] = {'right': {'right_fake': 0, 'right_real': 0},
+                                     'wrong': {'wrong_fake': 0, 'wrong_real': 0}}
                 if label == pred:
                     if label == 1:
                         results[cate]['right']['right_real'] += 1
                     else:
-                        results[cate]['right']['right_fake'] += 1                        
+                        results[cate]['right']['right_fake'] += 1
                 else:
                     if label == 1:
                         results[cate]['wrong']['wrong_real'] += 1
                     else:
-                        results[cate]['wrong']['wrong_fake'] += 1   
+                        results[cate]['wrong']['wrong_fake'] += 1
 
-    os.makedirs('results', exist_ok=True)      
+    os.makedirs('results', exist_ok=True)
     with open(args.output_path, "w") as file:
         json.dump(outputs, file, indent=2)
     acc = calculate_results_acc(results)
-    print(acc)
+    log.info(acc)
 
-        
-    
+
 def main():
     args = parse_args()
     model = load_model(args)
@@ -201,10 +231,6 @@ def main():
     )
     validate(args, model, cls_test_dataloader)
 
-    
-
 
 if __name__ == "__main__":
     main()
-    
-    
