@@ -21,4 +21,4 @@ not_useful_for_now
 *slurm*
 
 example_data/videos/ego4d/*.mp4
-data/*
+data
