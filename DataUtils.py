@@ -1,9 +1,26 @@
+"""
+Dataset structure
+Relative paths has 2 patterns, SUBSET in {fake_frames, fake_videos, real_frames, real_videos}:
+
+```text
+<TASK>/<METHOD>/<SUBSET>/
+<TASK>/<METHOD>/<S_METHOD>/<SUBSET>/
+```
+
+After that, the files are organized as:
+
+```text
+<v_name>/frame_<%06d>.jpg
+<v_name>.mp4
+```
+"""
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass, asdict
 from enum import Enum
 from pathlib import Path
+from tqdm import tqdm
 from typing import List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -27,49 +44,76 @@ class Subset(str, Enum):
 
 @dataclass
 class IndexEntry:
-    root: Path
-    rel_path: Path
-    task: str
-    method: str
-    subset: Subset
-    label: int  # 0=real, 1=fake
-    mode: str  # 'video' or 'frame'
+    root: Path  # Root path
+    rel_path: Path  # Path to file
+    task: str  # task name, metadata
+    method: str  # method name, metadata
+    subset: Subset  # help defining the label
+    label: int  # 0=real, 1=fake for gt value
+    mode: str  # 'video' or 'frame' data file type
+
+    def __getitem__(self, item: str) -> object:
+        return getattr(self, item)
 
 
 def data_parse(file_path: Path, root: Path) -> IndexEntry:
     """
-    Parse path layout:
-        <root>/<Task>/<Method>/{real_videos|fake_videos|real_frames|fake_frames}/.../file
-    or for two-level methods:
-        <root>/<Task>/<Method>/<Method2>/{real_videos|fake_videos|real_frames|fake_frames}/.../file
+    Parse a file path into IndexEntry components.
+    Expected structures:
+      <root>/<Task>/<Method>/{real_videos|fake_videos|real_frames|fake_frames}/file
+      <root>/<Task>/<Method>/<Method2>/{real_videos|fake_videos|real_frames|fake_frames}/file
+      <root>/{0_real|1_fake}/<Task>/<Method>/{real_videos|fake_videos|real_frames|fake_frames}/file
+      <root>/{0_real|1_fake}/<Task>/<Method>/<Method2>/{real_videos|fake_videos|real_frames|fake_frames}/file
+    - file could be <v_name>.mp4 or <v_name>/frame_%06d.jpg
+    - 0_real/1_fake is an optional flag that can be used for quick filtering,
     """
     parts = file_path.relative_to(root).parts
-    # .../<Task>/<Method>/<subset>/file        -> len >= 4 (including file)
-    # .../<Task>/<Method>/<Method2>/<subset>/file -> len >= 5
-    if len(parts) < 4:
-        raise ValueError(f"Unexpected path structure: {file_path} (relative: {parts})")
+    if len(parts) < 4:        raise ValueError(f"Unexpected path structure: {file_path} (relative: {parts})")
 
-    # remove filename
-    dir_parts = parts[:-1]
+    # Remove the filename; only directories remain
+    dir_parts = list(parts[:-1])
+    subset_values = {s.value for s in Subset}
 
-    # Try 3-dir layout: Task / Method / Subset
-    if len(dir_parts) >= 3 and dir_parts[2] in Subset.__members__.values():
-        # not likely, keep generic path parsing below
-        pass
+    # 1) Find the subset by scanning from right to left (to allow extra dirs after subset, e.g., video_name/)
+    subset_idx = -1
+    for i in range(len(dir_parts) - 1, -1, -1):
+        if dir_parts[i] in subset_values:
+            subset_idx = i
+            break
+    if subset_idx == -1:
+        raise ValueError(
+            f"Could not locate subset in path: {file_path}. "
+            f"Expected one of {sorted(subset_values)}."
+        )
 
-    # Generic parsing
-    if len(dir_parts) == 3:
-        task, method, subset = dir_parts
-    elif len(dir_parts) >= 4:
-        task, m1, m2, subset = dir_parts[:4]
-        method = f"{m1}-{m2}"
-    else:
-        raise ValueError(f"Cannot parse directory parts: {dir_parts}")
+    subset = dir_parts[subset_idx]
 
-    if subset not in {s.value for s in Subset}:
-        raise ValueError(f"Subset must be one of {list(s.value for s in Subset)}, got: {subset}")
+    # 2) Everything before the subset contains: [optional flag]/Task/Method[/Method2/...]
+    head = dir_parts[:subset_idx]
 
-    label = 0 if subset.startswith("real_") else 1
+    # Optional leading flag
+    flag = None
+    if head and head[0] in {"0_real", "1_fake"}:
+        flag = head.pop(0)
+
+    # We now require at least <Task>/<Method>
+    if len(head) < 2:
+        raise ValueError(
+            f"Cannot parse <Task>/<Method> from: {dir_parts}. "
+            f"Got head={head}, subset={subset}."
+        )
+
+    task = head[0]
+    method_parts = head[1:]
+    method = "/".join(method_parts)
+
+    # 3) Label & mode
+    label_from_subset = 0 if subset.startswith("real_") else 1
+    if flag is not None:
+        label_from_flag = 0 if flag == "0_real" else 1
+        if label_from_flag != label_from_subset:
+            print(f"[warn] flag {flag} != subset {subset}; using subset-derived label.")
+
     mode = "video" if "videos" in subset else ("frame" if "frames" in subset else "unknown")
 
     return IndexEntry(
@@ -78,15 +122,15 @@ def data_parse(file_path: Path, root: Path) -> IndexEntry:
         task=str(task),
         method=str(method),
         subset=Subset(subset),
-        label=label,
+        label=label_from_subset,
         mode=mode,
     )
 
 
-def index_list(root_path: Path, file_exts: Tuple[str, ...] = VID_EXTS) -> List[IndexEntry]:
+def index_list(root_path: Path, file_exts: Tuple[str, ...]) -> List[IndexEntry]:
     entries: List[IndexEntry] = []
     root_path = Path(root_path)
-    for dirpath, _, filenames in os.walk(root_path):
+    for dirpath, _, filenames in tqdm(os.walk(root_path), desc=f"Indexing {root_path}"):
         dirpath = Path(dirpath)
         for fn in filenames:
             if fn.lower().endswith(file_exts):
@@ -94,23 +138,20 @@ def index_list(root_path: Path, file_exts: Tuple[str, ...] = VID_EXTS) -> List[I
                 try:
                     entries.append(data_parse(p, root_path))
                 except Exception as e:
-                    # Skip malformed records but continue
-                    # You can log this if desired.
+                    tqdm.write(f"[warn] Skipping file {p}: {e}")
                     continue
     return entries
 
 
 def index_dataframe(root_path: Path,
-                    video_exts: Tuple[str, ...] = VID_EXTS,
-                    frame_exts: Tuple[str, ...] = IMG_EXTS) -> pd.DataFrame:
+                    file_exts: Tuple[str, ...] = IMG_EXTS, ) -> pd.DataFrame:
     """
     Build a DataFrame with one row per media file (video or frame).
     Columns: ['task','method','subset','label','mode','rel_path','abs_path','root']
     """
     root_path = Path(root_path)
     all_entries: List[IndexEntry] = []
-    all_entries.extend(index_list(root_path, file_exts=video_exts))
-    all_entries.extend(index_list(root_path, file_exts=frame_exts))
+    all_entries.extend(index_list(root_path, file_exts=file_exts))
 
     if not all_entries:
         return pd.DataFrame(columns=[
@@ -142,7 +183,7 @@ REQUIRED_COLS: Tuple[str, ...] = (
     "label",  # 0=real, 1=fake  (ground truth)
     "model",  # model name or identifier
     "mode",  # 'video' or 'frame'
-    "score",  # real-valued score, higher => more likely fake
+    "score",  # real-valued score, higher => more likely fake, -1 indicating unavailable
     "pred",  # hard prediction in {0,1} produced by the model
 )
 
@@ -313,6 +354,17 @@ def quick_report(df: pd.DataFrame, *, balance_for_groups: bool = True, group_fak
                  random_state: Optional[int] = None) -> Mapping[str, object]:
     """
     Produce a small dictionary of core numbers. Suitable for logging.
+
+    DF input need cols: ['sample_id', 'task', 'method', 'subset', 'label', 'model', 'mode', 'score', 'pred']
+    "sample_id",  # unique id per row (string or int) you use to join with index
+    "task",  # from dataset
+    "method",  # from dataset
+    "subset",  # real_videos/fake_videos/... from dataset
+    "label",  # 0=real, 1=fake  (ground truth)
+    "model",  # model name or identifier
+    "mode",  # 'video' or 'frame'
+    "score",  # real-valued score, higher => more likely fake
+    "pred",  # hard prediction in {0,1} produced by the model
 
     Overall Accuracy
     Accuracy by Task
