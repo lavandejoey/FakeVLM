@@ -207,7 +207,6 @@ rpds-py==0.27.1
 ruff==0.13.1
 safehttpx==0.1.6
 safetensors==0.6.2
--e git+https://github.com/lavandejoey/AntifakePrompt.git@e261aa6ee4c398f63a36c08b7ebad3455dc1428e#egg=salesforce_lavis&subdirectory=../../../Detectors/AntifakePrompt
 scikit-image==0.25.2
 scikit-learn==1.7.2
 scipy==1.15.3
