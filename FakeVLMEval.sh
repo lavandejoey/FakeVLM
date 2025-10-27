@@ -36,9 +36,6 @@ done_csv_list=("results")
 
 source /home/infres/ziyliu-24/miniconda3/etc/profile.d/conda.sh
 conda activate fakevlm310
-module load cuda/12.4.1 || module load cuda/12.1
-
-N_GPUS=${SLURM_GPUS_ON_NODE:-1}
 
 srun python3 -Wignore FakeVLMEval.py \
 --data_root "${data_root}" \
@@ -47,6 +44,7 @@ srun python3 -Wignore FakeVLMEval.py \
 --data_csv ${data_entry_csv} \
 --done_csv_list "${done_csv_list[@]}"
 
+#N_GPUS=${SLURM_GPUS_ON_NODE:-1}
 #VAL_BATCH_SIZE=$((12 * N_GPUS))
 #torchrun --standalone --nproc_per_node="${N_GPUS}" FakeVLMEval.py \
 #--data_root "${data_root}" \

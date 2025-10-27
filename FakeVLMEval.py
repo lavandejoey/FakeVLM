@@ -220,12 +220,12 @@ def validate_parallel(args, model, cls_test_dataloader, processor, device, local
     processor = _ensure_llava_processing_args(processor)
     rows = []  # Used to build DataUtils.required schema
 
-    # --- DDP Output File Fix ---
+    # DDP Output File Fix
     out_path = Path(args.pred_csv)
     # Make the output path unique for each process
     out_path = out_path.parent / f"{out_path.stem}_rank{local_rank}.csv"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # --- DDP Output File Fix End ---
+    # DDP Output File Fix End
 
     with torch.no_grad():
         for collated in tqdm(cls_test_dataloader, desc=f"Evaluating Rank {local_rank}"):  # Updated desc
@@ -280,7 +280,7 @@ def validate_parallel(args, model, cls_test_dataloader, processor, device, local
 
 def main_parallel():
     args = parse_args()
-    # --- DDP Setup Start ---
+    # DDP Setup Start
     # Initialize the distributed process group
     dist.init_process_group(backend="nccl")
     # Get the GPU ID for the current process
@@ -288,15 +288,15 @@ def main_parallel():
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
     log.info(f"Initialized DDP on rank {local_rank} on device {device}")
-    # --- DDP Setup End ---
+    # DDP Setup End
 
     model = load_model(args)
-    # --- DDP Model Setup ---
+    # DDP Model Setup
     # Move model to the process-specific GPU
     model = model.to(device)
     # Wrap the model in DDP
     model = DDP(model, device_ids=[local_rank])
-    # --- DDP Model Setup End ---
+    # DDP Model Setup End
 
     processor = AutoProcessor.from_pretrained("llava-hf/llava-1.5-7b-hf", revision='a272c74')
     processor = _ensure_llava_processing_args(processor)
@@ -305,10 +305,10 @@ def main_parallel():
         processor=processor,
     )
 
-    # --- DDP Sampler Setup ---
+    # DDP Sampler Setup
     # Create a sampler to give each process its own slice of data
     cls_test_sampler = DistributedSampler(cls_test_dataset, shuffle=False)
-    # --- DDP Sampler Setup End ---
+    # DDP Sampler Setup End
 
     cls_test_dataloader = DataLoader(
         cls_test_dataset,
